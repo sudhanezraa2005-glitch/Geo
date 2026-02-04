@@ -1,75 +1,154 @@
-# app.py
 import streamlit as st
 import pandas as pd
 import plotly.express as px
+from sklearn_extra.cluster import KMedoids
 
 st.set_page_config(page_title="Geo Clustering Dashboard", layout="wide")
+st.title("Geo Clustering Dashboard (K-Medoids)")
 
-st.title("Geo Clustering Dashboard")
+# --------------------------------------------------
+# Load pincode master (cached)
+# --------------------------------------------------
+@st.cache_data
+def load_pincode_master():
+    df = pd.read_csv("All-India-Pincode-list-with-latitude-and-longitude.csv")
+    df = df.rename(columns={
+        "Pincode": "pincode",
+        "StateName": "State",
+        "Latitude": "Latitude",
+        "Longitude": "Longitude"
+    })
+    df["pincode"] = df["pincode"].astype(str).str.strip()
+    df["State"] = df["State"].astype(str).str.strip().str.title()
+    return df[["pincode", "State", "Latitude", "Longitude"]]
 
-# 1. Upload CSV / Excel
+pincode_master = load_pincode_master()
+
+# --------------------------------------------------
+# Upload file (ONLY PINCODES)
+# --------------------------------------------------
 uploaded_file = st.file_uploader(
-    "Upload pincode file (CSV or Excel)",
+    "Upload pincode file (CSV or Excel – must contain a 'pincode' column)",
     type=["csv", "xlsx"]
 )
 
 if uploaded_file is not None:
-    if uploaded_file.name.endswith(".csv"):
-        df = pd.read_csv(uploaded_file)
-    else:
-        df = pd.read_excel(uploaded_file)
 
-    # Basic validation
-    required_cols = ["State", "Latitude", "Longitude", "cluster"]
-    if not all(col in df.columns for col in required_cols):
-        st.error("Uploaded file does not contain required columns.")
+    # Read uploaded file
+    if uploaded_file.name.endswith(".csv"):
+        user_df = pd.read_csv(uploaded_file)
+    else:
+        user_df = pd.read_excel(uploaded_file)
+
+    # Normalize column names
+    user_df.columns = user_df.columns.str.strip().str.lower()
+
+    if "pincode" not in user_df.columns:
+        st.error("Uploaded file must contain a 'pincode' column.")
         st.stop()
 
-    # Normalize state names
-    df["State"] = df["State"].astype(str).str.strip().str.title()
+    user_df["pincode"] = user_df["pincode"].astype(str).str.strip()
 
-    # 2. State dropdown
-    states = sorted(df["State"].unique())
-    selected_state = st.selectbox("Select State", states)
+    # --------------------------------------------------
+    # Merge with pincode master
+    # --------------------------------------------------
+    df = user_df.merge(pincode_master, on="pincode", how="left")
 
-    state_df = df[df["State"] == selected_state]
+    df = df.dropna(subset=["Latitude", "Longitude", "State"])
 
-    # 3. Metrics
+    if df.empty:
+        st.error("No valid pincodes found after mapping.")
+        st.stop()
+
+    # --------------------------------------------------
+    # Clustering options
+    # --------------------------------------------------
+    st.sidebar.header("Clustering Options")
+
+    scope = st.sidebar.radio(
+        "Clustering Scope",
+        ["All India", "State-wise"]
+    )
+
+    if scope == "State-wise":
+        states = sorted(df["State"].unique())
+        selected_state = st.sidebar.selectbox("Select State", states)
+        df = df[df["State"] == selected_state]
+
+    # Number of clusters
+    max_k = min(10, len(df))
+    k = st.sidebar.slider("Number of clusters (k)", 2, max_k, 3)
+
+    # --------------------------------------------------
+    # K-Medoids clustering
+    # --------------------------------------------------
+    X = df[["Latitude", "Longitude"]].values
+
+    kmedoids = KMedoids(
+        n_clusters=k,
+        method="pam",
+        random_state=42
+    )
+
+    df["cluster"] = kmedoids.fit_predict(X)
+
+    # Identify medoids
+    df["is_medoid"] = 0
+    df.loc[kmedoids.medoid_indices_, "is_medoid"] = 1
+
+    # --------------------------------------------------
+    # Metrics
+    # --------------------------------------------------
     col1, col2 = st.columns(2)
-    col1.metric("Total Data Points", len(state_df))
-    col2.metric("Number of Clusters", state_df["cluster"].nunique())
+    col1.metric("Total Data Points", len(df))
+    col2.metric("Number of Clusters", df["cluster"].nunique())
 
-    # 4. Cluster stats (centroid + count)
+    # --------------------------------------------------
+    # Cluster stats (centroid = medoid)
+    # --------------------------------------------------
     cluster_stats = (
-        state_df.groupby("cluster")
+        df.groupby("cluster")
         .agg(
-            centroid_lat=("Latitude", "mean"),
-            centroid_lon=("Longitude", "mean"),
-            cluster_size=("cluster", "size")
+            cluster_size=("cluster", "size"),
+            medoid_lat=("Latitude", "first"),
+            medoid_lon=("Longitude", "first")
         )
         .reset_index()
     )
 
-    state_df = state_df.merge(cluster_stats, on="cluster", how="left")
+    df = df.merge(cluster_stats, on="cluster", how="left")
 
-    # 5. Map
+    # --------------------------------------------------
+    # Map visualization
+    # --------------------------------------------------
     fig = px.scatter_mapbox(
-        state_df,
+        df,
         lat="Latitude",
         lon="Longitude",
         color="cluster",
         mapbox_style="open-street-map",
-        zoom=6,
+        zoom=5,
         center={
-            "lat": state_df["Latitude"].mean(),
-            "lon": state_df["Longitude"].mean()
+            "lat": df["Latitude"].mean(),
+            "lon": df["Longitude"].mean()
         },
         hover_data={
+            "pincode": True,
             "cluster": True,
             "cluster_size": True,
-            "centroid_lat": True,
-            "centroid_lon": True
+            "medoid_lat": True,
+            "medoid_lon": True
         }
+    )
+
+    # Highlight medoids
+    fig.update_traces(marker=dict(size=6, opacity=0.7))
+    fig.add_scattermapbox(
+        lat=df[df["is_medoid"] == 1]["Latitude"],
+        lon=df[df["is_medoid"] == 1]["Longitude"],
+        mode="markers",
+        marker=dict(size=16, color="black"),
+        name="Medoids (Cluster Centers)"
     )
 
     st.plotly_chart(fig, use_container_width=True)
