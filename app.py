@@ -113,21 +113,46 @@ if uploaded_file is not None:
         states = sorted(df["State"].unique())
         selected_state = st.sidebar.selectbox("Select State", states)
         df = df[df["State"] == selected_state]
+    # ---- SAFETY CHECK: enough data ----
+    if df.shape[0] < 2:
+        st.warning("Not enough data points to perform clustering.")
+        st.stop()
 
     # Number of clusters
     max_k = min(10, len(df))
-    k = st.sidebar.slider("Number of clusters (k)", 2, max_k, 3)
+    # ---- SAFE K SELECTION ----
+max_k = min(10, df.shape[0] - 1)
+
+if max_k < 2:
+    st.warning("Not enough data points for clustering.")
+    st.stop()
+
+k = st.sidebar.slider(
+    "Number of clusters (k)",
+    min_value=2,
+    max_value=max_k,
+    value=min(3, max_k)
+)
+
 
     # --------------------------------------------------
     # K-Medoids clustering
     # --------------------------------------------------
+    # ---- REMOVE DUPLICATE GEO POINTS ----
+    df = df.drop_duplicates(subset=["Latitude", "Longitude"]).reset_index(drop=True)
+
     X = df[["Latitude", "Longitude"]].values
 
+    l# ---- RUN K-MEDOIDS SAFELY ----
+try:
     labels, medoid_indices = k_medoids(X, k)
+except Exception as e:
+    st.error(f"Clustering failed: {e}")
+    st.stop()
 
-    df["cluster"] = labels
-    df["is_medoid"] = 0
-    df.loc[medoid_indices, "is_medoid"] = 1
+df["cluster"] = labels
+df["is_medoid"] = 0
+df.loc[medoid_indices, "is_medoid"] = 1
 
     # --------------------------------------------------
     # Metrics
