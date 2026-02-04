@@ -6,7 +6,42 @@ st.write("Python version:", sys.version)
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-from sklearn_extra.cluster import KMedoids
+import numpy as np
+
+def k_medoids(X, k, max_iter=100):
+    n = X.shape[0]
+
+    # Randomly choose initial medoids
+    medoid_indices = np.random.choice(n, k, replace=False)
+
+    for _ in range(max_iter):
+        medoids = X[medoid_indices]
+
+        # Assign points to nearest medoid
+        distances = np.linalg.norm(X[:, None, :] - medoids[None, :, :], axis=2)
+        labels = np.argmin(distances, axis=1)
+
+        new_medoids = medoid_indices.copy()
+
+        # Update medoids
+        for i in range(k):
+            cluster_points = X[labels == i]
+            if len(cluster_points) == 0:
+                continue
+
+            intra_distances = np.sum(
+                np.linalg.norm(cluster_points[:, None, :] - cluster_points[None, :, :], axis=2),
+                axis=1
+            )
+            new_medoids[i] = np.where(labels == i)[0][np.argmin(intra_distances)]
+
+        if np.all(new_medoids == medoid_indices):
+            break
+
+        medoid_indices = new_medoids
+
+    return labels, medoid_indices
+
 
 st.set_page_config(page_title="Geo Clustering Dashboard", layout="wide")
 st.title("Geo Clustering Dashboard (K-Medoids)")
@@ -89,17 +124,11 @@ if uploaded_file is not None:
     # --------------------------------------------------
     X = df[["Latitude", "Longitude"]].values
 
-    kmedoids = KMedoids(
-        n_clusters=k,
-        method="pam",
-        random_state=42
-    )
+    labels, medoid_indices = k_medoids(X, k)
 
-    df["cluster"] = kmedoids.fit_predict(X)
-
-    # Identify medoids
+    df["cluster"] = labels
     df["is_medoid"] = 0
-    df.loc[kmedoids.medoid_indices_, "is_medoid"] = 1
+    df.loc[medoid_indices, "is_medoid"] = 1
 
     # --------------------------------------------------
     # Metrics
