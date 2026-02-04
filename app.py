@@ -1,12 +1,21 @@
 import sys
 import streamlit as st
+
+# Show full errors during development
 st.set_option("client.showErrorDetails", True)
 
-st.write("Python version:", sys.version)
 import pandas as pd
 import plotly.express as px
 import numpy as np
 
+st.set_page_config(page_title="Geo Clustering Dashboard", layout="wide")
+st.title("Geo Clustering Dashboard (K-Medoids)")
+
+st.write("Python version:", sys.version)
+
+# --------------------------------------------------
+# Pure Python K-Medoids
+# --------------------------------------------------
 def k_medoids(X, k, max_iter=100):
     n = X.shape[0]
 
@@ -24,15 +33,19 @@ def k_medoids(X, k, max_iter=100):
 
         # Update medoids
         for i in range(k):
-            cluster_points = X[labels == i]
-            if len(cluster_points) == 0:
+            cluster_idx = np.where(labels == i)[0]
+            if len(cluster_idx) == 0:
                 continue
 
+            cluster_points = X[cluster_idx]
             intra_distances = np.sum(
-                np.linalg.norm(cluster_points[:, None, :] - cluster_points[None, :, :], axis=2),
+                np.linalg.norm(
+                    cluster_points[:, None, :] - cluster_points[None, :, :],
+                    axis=2
+                ),
                 axis=1
             )
-            new_medoids[i] = np.where(labels == i)[0][np.argmin(intra_distances)]
+            new_medoids[i] = cluster_idx[np.argmin(intra_distances)]
 
         if np.all(new_medoids == medoid_indices):
             break
@@ -42,11 +55,8 @@ def k_medoids(X, k, max_iter=100):
     return labels, medoid_indices
 
 
-st.set_page_config(page_title="Geo Clustering Dashboard", layout="wide")
-st.title("Geo Clustering Dashboard (K-Medoids)")
-
 # --------------------------------------------------
-# Load pincode master (cached)
+# Load pincode master
 # --------------------------------------------------
 @st.cache_data
 def load_pincode_master():
@@ -60,6 +70,7 @@ def load_pincode_master():
     df["pincode"] = df["pincode"].astype(str).str.strip()
     df["State"] = df["State"].astype(str).str.strip().str.title()
     return df[["pincode", "State", "Latitude", "Longitude"]]
+
 
 pincode_master = load_pincode_master()
 
@@ -79,7 +90,6 @@ if uploaded_file is not None:
     else:
         user_df = pd.read_excel(uploaded_file)
 
-    # Normalize column names
     user_df.columns = user_df.columns.str.strip().str.lower()
 
     if "pincode" not in user_df.columns:
@@ -92,15 +102,14 @@ if uploaded_file is not None:
     # Merge with pincode master
     # --------------------------------------------------
     df = user_df.merge(pincode_master, on="pincode", how="left")
-
     df = df.dropna(subset=["Latitude", "Longitude", "State"])
 
-    if df.empty:
-        st.error("No valid pincodes found after mapping.")
+    if df.shape[0] < 2:
+        st.warning("Not enough valid data points after pincode mapping.")
         st.stop()
 
     # --------------------------------------------------
-    # Clustering options
+    # Sidebar options
     # --------------------------------------------------
     st.sidebar.header("Clustering Options")
 
@@ -113,46 +122,42 @@ if uploaded_file is not None:
         states = sorted(df["State"].unique())
         selected_state = st.sidebar.selectbox("Select State", states)
         df = df[df["State"] == selected_state]
-    # ---- SAFETY CHECK: enough data ----
+
     if df.shape[0] < 2:
-        st.warning("Not enough data points to perform clustering.")
+        st.warning("Not enough data points after filtering.")
         st.stop()
 
-    # Number of clusters
-    max_k = min(10, len(df))
-    # ---- SAFE K SELECTION ----
-max_k = min(10, df.shape[0] - 1)
-
-if max_k < 2:
-    st.warning("Not enough data points for clustering.")
-    st.stop()
-
-k = st.sidebar.slider(
-    "Number of clusters (k)",
-    min_value=2,
-    max_value=max_k,
-    value=min(3, max_k)
-)
-
-
-    # --------------------------------------------------
-    # K-Medoids clustering
-    # --------------------------------------------------
-    # ---- REMOVE DUPLICATE GEO POINTS ----
+    # Remove duplicate geo points
     df = df.drop_duplicates(subset=["Latitude", "Longitude"]).reset_index(drop=True)
 
+    # Safe k selection
+    max_k = min(10, df.shape[0] - 1)
+
+    if max_k < 2:
+        st.warning("Not enough data points for clustering.")
+        st.stop()
+
+    k = st.sidebar.slider(
+        "Number of clusters (k)",
+        min_value=2,
+        max_value=max_k,
+        value=min(3, max_k)
+    )
+
+    # --------------------------------------------------
+    # Run K-Medoids safely
+    # --------------------------------------------------
     X = df[["Latitude", "Longitude"]].values
 
-    l# ---- RUN K-MEDOIDS SAFELY ----
-try:
-    labels, medoid_indices = k_medoids(X, k)
-except Exception as e:
-    st.error(f"Clustering failed: {e}")
-    st.stop()
+    try:
+        labels, medoid_indices = k_medoids(X, k)
+    except Exception as e:
+        st.error(f"Clustering failed: {e}")
+        st.stop()
 
-df["cluster"] = labels
-df["is_medoid"] = 0
-df.loc[medoid_indices, "is_medoid"] = 1
+    df["cluster"] = labels
+    df["is_medoid"] = 0
+    df.loc[medoid_indices, "is_medoid"] = 1
 
     # --------------------------------------------------
     # Metrics
@@ -162,7 +167,7 @@ df.loc[medoid_indices, "is_medoid"] = 1
     col2.metric("Number of Clusters", df["cluster"].nunique())
 
     # --------------------------------------------------
-    # Cluster stats (centroid = medoid)
+    # Cluster stats
     # --------------------------------------------------
     cluster_stats = (
         df.groupby("cluster")
@@ -199,8 +204,8 @@ df.loc[medoid_indices, "is_medoid"] = 1
         }
     )
 
-    # Highlight medoids
     fig.update_traces(marker=dict(size=6, opacity=0.7))
+
     fig.add_scattermapbox(
         lat=df[df["is_medoid"] == 1]["Latitude"],
         lon=df[df["is_medoid"] == 1]["Longitude"],
