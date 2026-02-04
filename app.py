@@ -1,9 +1,8 @@
 import sys
 import streamlit as st
+st.set_option("client.showErrorDetails", True)
 
 st.write("Python version:", sys.version)
-
-import streamlit as st
 import pandas as pd
 import plotly.express as px
 import numpy as np
